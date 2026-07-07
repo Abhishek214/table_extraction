@@ -1,6 +1,6 @@
 # Generalized PDF Table Extractor
 
-A clean, layout-agnostic table extraction library for PDF documents. Zero hardcoded keywords, zero hardcoded column names — purely geometric and structural detection.
+A clean, layout-agnostic table extraction library for PDF documents — purely geometric and structural detection.
 
 ## Approach
 
@@ -13,7 +13,7 @@ All decisions are based on geometry (x, y positions, line detection) and structu
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
 
 ## Usage
@@ -22,16 +22,16 @@ pip install -r requirements.txt
 
 ```bash
 # Single PDF
-python -m table_extraction.main -i document.pdf -o ./output
+python3 -m main -i document.pdf -o ./output
 
 # Directory of PDFs
-python -m table_extraction.main -i ./input_dir -o ./output_dir
+python3 -m main -i ./input_dir -o ./output_dir
 
 # Choose output formats (default: all three)
-python -m table_extraction.main -i doc.pdf -o ./out -f json,csv
+python3 -m main -i doc.pdf -o ./out -f json,csv
 
 # Debug logging
-python -m table_extraction.main -i doc.pdf -o ./out -v
+python3 -m main -i doc.pdf -o ./out -v
 ```
 
 ### Python API
@@ -95,3 +95,9 @@ After per-page extraction, tables are merged across pages when:
 - **Empty cells** — Preserved as empty strings in output
 - **Multi-page tables** — Automatically merged into single logical tables
 - **Narrative text** — Filtered structurally (long text spans, sparse rows) rather than by keyword
+
+## Roadmap
+
+| Current state | Next step | Future (if needed) |
+|---|---|---|
+| pdfplumber + word clustering (geometric) | Add OCR preprocessor for scanned PDFs (still geometric, just with OCR words instead of text-layer words) | Table Transformer for complex layouts (learned structure) |
