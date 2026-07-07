@@ -81,13 +81,55 @@ def extract_tables(pdf_path: str) -> list[TableRegion]:
 # ---------------------------------------------------------------------------
 
 def _extract_bordered(page: pdfplumber.page.Page) -> list[TableRegion]:
-    """Use pdfplumber's line/rectangle based extraction."""
+    """Use pdfplumber's line/rectangle based extraction.
+
+    pdfplumber's grid-finder treats any rects/lines as candidate table
+    borders. Decorative page furniture -- full-width accent bars, header/
+    footer stripes, background logo curves -- forms a grid too, and gets
+    reported as a "table" spanning (or exceeding) the whole page. A real
+    table occupies a bounded sub-region of the page's content area, so we
+    use the found table's bbox relative to the page as a structural filter
+    before ever looking at the cell text.
+    """
     found: list[TableRegion] = []
-    for raw in page.extract_tables() or []:
+    for table in page.find_tables():
+        if not _is_plausible_table_region(table, page):
+            continue
+        raw = table.extract()
         region = _plumb_table_to_region(raw, page.page_number)
         if region and _is_valid(region):
             found.append(region)
     return found
+
+
+def _is_plausible_table_region(
+    table: "pdfplumber.table.Table",
+    page: pdfplumber.page.Page,
+    max_area_ratio: float = 0.6,
+) -> bool:
+    """
+    Reject grids formed by decorative page furniture rather than an actual
+    table: such grids span nearly the entire page (often bleeding past the
+    page's own bounding box, since background shapes are drawn edge-to-edge
+    or larger). A genuine table occupies a bounded region of page content.
+    """
+    x0, top, x1, bottom = table.bbox
+    page_area = page.width * page.height
+    if page_area <= 0:
+        return False
+
+    # Bbox extending outside the page's own bounds is a strong signal that
+    # this "grid" came from background/decorative geometry, not table rules.
+    if x0 < page.bbox[0] - 1 or top < page.bbox[1] - 1:
+        return False
+    if x1 > page.bbox[2] + 1 or bottom > page.bbox[3] + 1:
+        return False
+
+    area_ratio = (x1 - x0) * (bottom - top) / page_area
+    if area_ratio > max_area_ratio:
+        return False
+
+    return True
 
 
 def _plumb_table_to_region(
@@ -180,6 +222,21 @@ def _extract_borderless(page: pdfplumber.page.Page) -> list[TableRegion]:
 
     # 5. Trim footer by detecting abnormal row spacing
     candidate_rows = _trim_footer_by_spacing(candidate_rows)
+
+    # Reject candidates whose "rows" are really titles/headings that just
+    # happen to x-align across a couple of lines. Genuine tabular data is
+    # set in one uniform body-text size with regular line pitch; headings
+    # and cover-page text mix large/varying font sizes. This is a font-size
+    # consistency check, not a keyword rule, so it generalizes across
+    # domains and catches false positives structurally. Checked on the
+    # rows that actually survive footer-trimming, so a stray oversized
+    # footer heading (trimmed anyway) doesn't cause a false rejection.
+    row_span = [rows[header_row_idx]] + [
+        row_words
+        for row_words in rows[header_row_idx + 1 : header_row_idx + 1 + len(candidate_rows)]
+    ]
+    if not _has_uniform_text_size(row_span):
+        return []
 
     # 6. Structural filters — NOT keyword-based
     data: list[list[str]] = []
@@ -400,6 +457,29 @@ def _trim_footer_by_spacing(
             return rows[: i + 1]
 
     return rows
+
+
+def _has_uniform_text_size(
+    rows: list[list[dict[str, Any]]],
+    max_relative_spread: float = 0.35,
+) -> bool:
+    """
+    Real tabular data is set in a single uniform body-text font size.
+    Headings, titles, and cover-page copy vary font size line to line
+    (a large title, then smaller subtitles/labels). Measure the spread of
+    word heights across the candidate rows; a wide spread means this is
+    heterogeneous free-form text, not a table.
+    """
+    heights = [w["bottom"] - w["top"] for row in rows for w in row]
+    if not heights:
+        return False
+    median_h = sorted(heights)[len(heights) // 2]
+    if median_h <= 0:
+        return False
+    max_h = max(heights)
+    min_h = min(heights)
+    relative_spread = (max_h - min_h) / median_h
+    return relative_spread <= max_relative_spread
 
 
 def _is_separator_line(row: list[str]) -> bool:
