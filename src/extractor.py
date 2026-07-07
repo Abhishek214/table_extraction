@@ -752,10 +752,85 @@ def merge_multi_page_tables(
 
     return merged
 
+def _is_actual_table(region: TableRegion) -> bool:
+    """
+    Validate if an extracted region is a real table vs. false positive.
+    Checks: header quality, cell vs. text nature, and structural coherence.
+    """
+    # 1. Minimum structural quality
+    if region.nrows < 2 or region.ncols < 2:
+        return False
 
-# ---------------------------------------------------------------------------
-# Main extraction function
-# ---------------------------------------------------------------------------
+    # 2. Header word count check
+    # Column headers should be short labels, not narrative text
+    col_word_count = sum(len(c.split()) for c in region.columns if c and c.strip())
+    if col_word_count > 10:
+        return False
+
+    # 3. Check cell text nature - are cells full sentences/paragraphs?
+    total_nonempty_cells = 0
+    sentence_like_cells = 0
+    very_long_cells = 0
+    total_words_in_cells = 0
+
+    for row in region.rows:
+        for cell in row:
+            if not cell or not cell.strip():
+                continue
+            total_nonempty_cells += 1
+            word_count = len(cell.split())
+            total_words_in_cells += word_count
+            if len(cell) > 70:
+                very_long_cells += 1
+            # A "sentence-like" cell is long and contains punctuation
+            if len(cell) > 25 and any(p in cell for p in ['.', ',', '!', '?']):
+                sentence_like_cells += 1
+
+    if total_nonempty_cells == 0:
+        return False
+
+    # If many cells look like full sentences rather than data values
+    if sentence_like_cells / total_nonempty_cells > 0.25:
+        return False
+
+    # If many cells are very long text blocks
+    if very_long_cells / total_nonempty_cells > 0.3:
+        return False
+
+    # 4. Average words per cell should be low for tables
+    avg_words_per_cell = total_words_in_cells / total_nonempty_cells
+    if avg_words_per_cell > 8:
+        return False
+
+    # 5. Check for single-column dominance (paragraph spread pattern)
+    col_content = [0] * region.ncols
+    for row in region.rows:
+        for i, cell in enumerate(row):
+            if cell and cell.strip():
+                col_content[i] += len(cell.strip())
+    total_content = sum(col_content)
+    if total_content > 0:
+        max_col_ratio = max(col_content) / total_content
+        if max_col_ratio > 0.65 and region.ncols > 2:
+            return False
+
+    # 6. Tables should have scattered blanks (not just trailing blanks)
+    # Proper tables have cells in various columns; paragraphs have content
+    # in first few cells and empty trailing cells
+    scattered_blanks = 0
+    for row in region.rows:
+        # Count blanks that are in the middle of content
+        for i in range(region.ncols):
+            blank = not row[i] or not row[i].strip()
+            left_content = any(row[j] and row[j].strip() for j in range(max(0, i-2), i))
+            right_content = any(row[j] and row[j].strip() for j in range(i+1, min(i+3, region.ncols)))
+            if blank and left_content and right_content:
+                scattered_blanks += 1
+    if scattered_blanks < 3 and region.nrows > 5:
+        return False
+
+    return True
+
 
 def extract_tables_from_pdf(pdf_path: str) -> list[TableRegion]:
     """
@@ -821,6 +896,9 @@ def extract_tables_from_pdf(pdf_path: str) -> list[TableRegion]:
                 region.title = _find_table_titles(page, region)
                 if not region.title or region.title == "Untitled Table":
                     region.title = f"Table from page {region.page_num}"
+
+            # Validate extracted regions to avoid treating paragraph text as tables
+            page_regions = [r for r in page_regions if _is_actual_table(r)]
 
             # Deduplicate multiple strategies on same page
             page_regions = deduplicate_page_regions(page_regions)
