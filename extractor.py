@@ -129,13 +129,14 @@ def _extract_borderless(page: pdfplumber.page.Page) -> list[TableRegion]:
     Detect borderless tables by using the header row as column anchors.
 
     Algorithm:
-        1. Find table title → restrict word set to region below it.
-        2. Group remaining words into rows by y-coordinate.
+        1. Group words into rows (physical lines) by y-coordinate.
+        2. Find a table title line → restrict to rows below it, if present.
         3. First non-noise row = header. Merge close header words (e.g.
            "Invoice" + "#") into single column headers.
         4. Use header word centers as column anchors.
         5. Assign each data word to the nearest column anchor.
-        6. Filter structurally invalid rows.
+        6. Filter structurally invalid rows and reject content that reads
+           like prose/bullets/code rather than tabular data.
     """
     words = page.extract_words(
         keep_blank_chars=False,
@@ -145,13 +146,13 @@ def _extract_borderless(page: pdfplumber.page.Page) -> list[TableRegion]:
     if not words:
         return []
 
-    # 1. Restrict to table region (below title if one exists)
-    table_words = _restrict_to_table_region(words)
-    if len(table_words) < 4:
+    # 1. Group words into rows (physical lines) by y-coordinate
+    rows = _words_to_rows(words)
+    if len(rows) < 3:
         return []
 
-    # 2. Group words into rows by y-coordinate
-    rows = _words_to_rows(table_words)
+    # 2. Restrict to table region (below title line if one exists)
+    rows = _restrict_to_table_region(rows)
     if len(rows) < 3:
         return []
 
@@ -167,6 +168,8 @@ def _extract_borderless(page: pdfplumber.page.Page) -> list[TableRegion]:
         return []
 
     header = [w["text"] for w in header_words]
+    if not _looks_like_header(header):
+        return []
 
     # 4. Assign data rows to columns using nearest-anchor matching
     candidate_rows: list[tuple[list[str], float]] = []
@@ -194,40 +197,73 @@ def _extract_borderless(page: pdfplumber.page.Page) -> list[TableRegion]:
     if len(data) < 1:
         return []
 
-    return [TableRegion(title="", columns=header, rows=data, page=page.page_number)]
+    # 7. Reject if the cell content reads like prose/bullets/code rather
+    #    than short atomic table values (dates, names, amounts, statuses).
+    if not _looks_tabular([header] + data):
+        return []
+
+    region = TableRegion(title="", columns=header, rows=data, page=page.page_number)
+    if not _is_valid(region):
+        return []
+
+    return [region]
 
 
 def _restrict_to_table_region(
-    words: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    rows: list[list[dict[str, Any]]],
+) -> list[list[dict[str, Any]]]:
     """
-    Keep only words that fall inside the likely table region.
-    If a title pattern ("Table X: ...") is found, only words below it are kept.
-    Otherwise all words are returned (the caller will try its best).
+    Keep only rows that fall inside the likely table region.
+    If a physical line matching a title pattern ("Table X: ...") is found,
+    only rows below it are kept. Otherwise all rows are returned (the caller
+    will try its best).
+
+    Matching is done per physical line (not on the whole page joined into
+    one string) so an incidental mention of the word "table" inside running
+    prose — e.g. "... the Table Extraction Challenge ..." — can't be
+    mistaken for a title and drag in everything below it on the page.
     """
-    # Look for title pattern in the full word list
-    text = " ".join(w["text"] for w in words)
-    title_match = re.search(r"Table\s+\S+.*?:", text, re.IGNORECASE)
-    if not title_match:
-        return words
+    for i, row in enumerate(rows):
+        line = " ".join(w["text"] for w in row).strip()
+        if re.match(r"^Table\s+\S+.*:", line, re.IGNORECASE):
+            return rows[i + 1 :]
+    return rows
 
-    title_text = title_match.group(0)
-    # Find the y-position of the title words
-    title_words = []
-    remaining = list(words)
-    for part in title_text.split():
-        for i, w in enumerate(remaining):
-            if w["text"].rstrip(":") == part.rstrip(":"):
-                title_words.append(w)
-                remaining = remaining[i + 1 :]
-                break
 
-    if not title_words:
-        return words
+def _looks_like_header(header: list[str]) -> bool:
+    """
+    Reject header candidates that are structurally not column titles —
+    e.g. a bullet marker ("•", "-", "*") standing alone as a "column".
+    """
+    for cell in header:
+        text = cell.strip()
+        if len(text) <= 1 and not text.isalnum():
+            return False
+    return True
 
-    title_bottom = max(w["bottom"] for w in title_words)
-    # Keep words that are clearly below the title
-    return [w for w in words if w["top"] >= title_bottom - 2]
+
+def _looks_tabular(
+    rows: list[list[str]],
+    max_avg_words: float = 2.5,
+    max_cell_words: int = 8,
+) -> bool:
+    """
+    Distinguish genuine tabular cell values from running prose that happens
+    to fall into whitespace-aligned buckets (e.g. wrapped bullet text, or
+    "key": "value" lines from a JSON snippet).
+
+    Real table cells — names, dates, amounts, short statuses/descriptions —
+    are short and atomic. Wrapped sentences are not. This is a structural
+    length check, not a keyword list, so it generalizes across domains.
+    """
+    word_counts = [len(c.split()) for r in rows for c in r if c.strip()]
+    if not word_counts:
+        return False
+    if max(word_counts) > max_cell_words:
+        return False
+    if sum(word_counts) / len(word_counts) > max_avg_words:
+        return False
+    return True
 
 
 def _words_to_rows(

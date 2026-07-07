@@ -89,9 +89,7 @@ Examples:
             logger.info("   Found %d table(s)", len(tables))
 
             if not tables:
-                logger.warning("   No tables extracted")
-                fail += 1
-                continue
+                logger.info("   No tables found (writing empty result)")
 
             for t in tables:
                 logger.info(
@@ -102,11 +100,13 @@ Examples:
                     f"{t.page}-{t.page_end}" if t.page_end and t.page_end != t.page else str(t.page),
                 )
 
+            # Always emit the JSON contract, even when no tables were found —
+            # downstream consumers expect one file per input document.
             if "json" in formats:
                 write_json(tables, output_dir / f"{doc_id}_tables.json", doc_id)
             if "csv" in formats:
                 write_csv(tables, output_dir, doc_id)
-            if "xlsx" in formats:
+            if "xlsx" in formats and tables:
                 write_excel(tables, output_dir / f"{doc_id}_tables.xlsx", doc_id)
 
             logger.info("   ✓ Done in %.1fs", time.time() - t1)
