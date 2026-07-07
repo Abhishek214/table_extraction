@@ -1,103 +1,60 @@
 #!/usr/bin/env python3
 """
-Table Extractor CLI
-
-Extract tables from PDF documents (bordered, borderless, multi-page).
+CLI entry-point for table extraction.
 
 Usage:
-    python main.py --input ./input --output ./output
-
-Output:
-    - <doc_id>_tables.json    (one JSON per PDF)
-    - <doc_id>_table_N.csv    (one CSV per table)
-    - <doc_id>_tables.xlsx    (optional Excel workbook)
+    python -m main --input ./input --output ./output
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 import time
 from pathlib import Path
 
-from src.extractor import extract_tables_from_pdf
-from src.writer import write_json, write_csv, write_excel
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
+from extractor import extract_tables
+from writer import write_csv, write_excel, write_json
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("table_extractor")
+logger = logging.getLogger("table_extraction")
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Extract tables from PDFs (bordered, borderless, multi-page).",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python main.py --input ./input --output ./output
-  python main.py --input ./docs --output ./out --format json,csv,xlsx
-  python main.py --input ./doc.pdf --output ./out --verbose
-        """,
-    )
-    parser.add_argument(
-        "--input", "-i",
-        required=True,
-        help="Path to input PDF or directory of PDFs",
-    )
-    parser.add_argument(
-        "--output", "-o",
-        required=True,
-        help="Output directory",
-    )
-    parser.add_argument(
-        "--format", "-f",
-        default="json,csv,xlsx",
-        help="Output formats: json, csv, xlsx (comma-separated, default: all)",
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose (DEBUG) logging",
-    )
-    return parser.parse_args()
-
-
-# ---------------------------------------------------------------------------
-# Document ID helper
-# ---------------------------------------------------------------------------
-
-def document_id_from_path(path: Path) -> str:
-    """Derive a clean document ID from the file path."""
+def _doc_id(path: Path) -> str:
+    """Derive a clean document ID from a file path."""
     name = path.stem
-    name = name.lstrip("0123456789_-")
-    name = name or path.stem
-    import re
+    name = name.lstrip("0123456789_-") or name
     name = re.sub(r"[^\w]", "_", name)
     return name[:60] or "document"
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Extract tables from PDFs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m table_extraction.main -i ./input -o ./output
+  python -m table_extraction.main -i doc.pdf -o ./out -f json,csv
+        """,
+    )
+    parser.add_argument("--input", "-i", required=True, help="PDF file or directory")
+    parser.add_argument("--output", "-o", required=True, help="Output directory")
+    parser.add_argument(
+        "--format", "-f", default="json,csv,xlsx",
+        help="Output formats (comma-separated). Default: json,csv,xlsx",
+    )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Debug logging")
+    args = parser.parse_args(argv)
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-        logger.debug("Verbose mode enabled")
 
     input_path = Path(args.input)
     output_dir = Path(args.output)
@@ -107,74 +64,68 @@ def main() -> None:
 
     # Collect PDFs
     if input_path.is_file():
-        pdf_files = [input_path]
+        pdfs = [input_path]
     elif input_path.is_dir():
-        pdf_files = sorted(input_path.glob("*.pdf"))
-        if not pdf_files:
-            logger.error(f"No PDF files found in {input_path}")
-            sys.exit(1)
+        pdfs = sorted(input_path.glob("*.pdf"))
+        if not pdfs:
+            logger.error("No PDFs found in %s", input_path)
+            return 1
     else:
-        logger.error(f"Input path does not exist: {input_path}")
-        sys.exit(1)
+        logger.error("Input path does not exist: %s", input_path)
+        return 1
 
-    logger.info(f"Processing {len(pdf_files)} PDF(s)...")
+    logger.info("Processing %d PDF(s) …", len(pdfs))
+    ok = 0
+    fail = 0
+    t0 = time.time()
 
-    total_start = time.time()
-    success_count = 0
-    error_count = 0
-
-    for pdf_path in pdf_files:
-        doc_start = time.time()
-        doc_id = document_id_from_path(pdf_path)
-        logger.info(f"Processing: {pdf_path.name} (id={doc_id})")
+    for pdf in pdfs:
+        t1 = time.time()
+        doc_id = _doc_id(pdf)
+        logger.info("→ %s  (id=%s)", pdf.name, doc_id)
 
         try:
-            regions = extract_tables_from_pdf(str(pdf_path))
-            logger.info(f"  -> Found {len(regions)} table(s)")
+            tables = extract_tables(str(pdf))
+            logger.info("   Found %d table(s)", len(tables))
 
-            if not regions:
-                logger.warning(f"  No tables extracted from {pdf_path.name}")
-                error_count += 1
+            if not tables:
+                logger.warning("   No tables extracted")
+                fail += 1
                 continue
 
-            # Preview first table
-            for r in regions:
-                page_end = getattr(r, "page_end", r.page_num)
+            for t in tables:
                 logger.info(
-                    f"  Table \'{r.title}\': {r.nrows} rows x {r.ncols} cols (pages {r.page_num}-{page_end})"
+                    "   '%s': %d rows × %d cols  (page %s)",
+                    t.title or "untitled",
+                    t.nrows,
+                    t.ncols,
+                    f"{t.page}-{t.page_end}" if t.page_end and t.page_end != t.page else str(t.page),
                 )
 
-            # Write outputs
             if "json" in formats:
-                json_path = output_dir / f"{doc_id}_tables.json"
-                write_json(regions, json_path, doc_id)
-
+                write_json(tables, output_dir / f"{doc_id}_tables.json", doc_id)
             if "csv" in formats:
-                write_csv(regions, output_dir, doc_id)
-
+                write_csv(tables, output_dir, doc_id)
             if "xlsx" in formats:
-                xlsx_path = output_dir / f"{doc_id}_tables.xlsx"
-                write_excel(regions, xlsx_path, doc_id)
+                write_excel(tables, output_dir / f"{doc_id}_tables.xlsx", doc_id)
 
-            elapsed = time.time() - doc_start
-            logger.info(f"  \u2713 Done in {elapsed:.1f}s")
-            success_count += 1
+            logger.info("   ✓ Done in %.1fs", time.time() - t1)
+            ok += 1
 
         except Exception as exc:
-            logger.error(f"  \u2717 Failed: {exc}", exc_info=args.verbose)
-            error_count += 1
+            logger.error("   ✗ Failed: %s", exc, exc_info=args.verbose)
+            fail += 1
 
-    total_elapsed = time.time() - total_start
     logger.info(
-        f"\n{'='*50}\n"
-        f"Done. {success_count}/{len(pdf_files)} PDFs processed "
-        f"in {total_elapsed:.1f}s total\n"
-        f"Output: {output_dir}"
+        "\n%s\nDone. %d/%d succeeded in %.1fs total. Output: %s",
+        "=" * 50,
+        ok,
+        len(pdfs),
+        time.time() - t0,
+        output_dir,
     )
-
-    if error_count > 0:
-        sys.exit(1)
+    return 1 if fail else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
