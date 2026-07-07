@@ -1,0 +1,43 @@
+{
+  "document_id": "doc_01",
+  "tables": [
+    {
+      "table_id": 1,
+      "page_start": 1,
+      "page_end": 1,
+      "title": "Table A: Monthly Funnel Summary",
+      "columns": [
+        "Metric",
+        "Jan",
+        "Feb",
+        "Mar"
+      ],
+      "rows": [
+        [
+          "Applications",
+          "1,240",
+          "1,310",
+          "1,405"
+        ],
+        [
+          "Approvals",
+          "820",
+          "860",
+          "910"
+        ],
+        [
+          "Declines",
+          "420",
+          "450",
+          "495"
+        ],
+        [
+          "Approval Rate",
+          "66.1%",
+          "65.6%",
+          "64.8%"
+        ]
+      ]
+    }
+  ]
+}

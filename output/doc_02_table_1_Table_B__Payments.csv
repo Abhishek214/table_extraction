@@ -1,0 +1,5 @@
+Vendor,Invoice #,Date,Amount,Status
+Alpha Supplies,INV-1042,2026-01-12,"$1,240.50",Paid
+Blue Logistics,INV-1043,2026-01-16,$890.00,Paid
+Cyan Services,INV-1044,2026-01-21,"$2,110.75",Pending
+Delta Repairs,INV-1045,2026-01-27,$310.00,Paid

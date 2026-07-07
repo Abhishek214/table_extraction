@@ -3,7 +3,7 @@
 CLI entry-point for table extraction.
 
 Usage:
-    python -m main --input ./input --output ./output
+    python3 -m main --input ./input --output ./output
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ logging.basicConfig(
 logger = logging.getLogger("table_extraction")
 
 
-def _doc_id(path: Path) -> str:
-    """Derive a clean document ID from a file path."""
+def _clean_doc_id(path: Path) -> str:
+    """Make a clean doc id from the filename."""
     name = path.stem
     name = name.lstrip("0123456789_-") or name
     name = re.sub(r"[^\w]", "_", name)
@@ -40,15 +40,14 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m table_extraction.main -i ./input -o ./output
-  python -m table_extraction.main -i doc.pdf -o ./out -f json,csv
+    python3 -m main --input ./input --output ./output
         """,
     )
     parser.add_argument("--input", "-i", required=True, help="PDF file or directory")
     parser.add_argument("--output", "-o", required=True, help="Output directory")
     parser.add_argument(
         "--format", "-f", default="json,csv,xlsx",
-        help="Output formats (comma-separated). Default: json,csv,xlsx",
+        help="Output formats, comma-separated. Default: json,csv,xlsx",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Debug logging")
     args = parser.parse_args(argv)
@@ -62,7 +61,7 @@ Examples:
 
     formats = [f.strip().lower() for f in args.format.split(",")]
 
-    # Collect PDFs
+    # gather PDFs
     if input_path.is_file():
         pdfs = [input_path]
     elif input_path.is_dir():
@@ -81,7 +80,7 @@ Examples:
 
     for pdf in pdfs:
         t1 = time.time()
-        doc_id = _doc_id(pdf)
+        doc_id = _clean_doc_id(pdf)
         logger.info("→ %s  (id=%s)", pdf.name, doc_id)
 
         try:
@@ -92,16 +91,13 @@ Examples:
                 logger.info("   No tables found (writing empty result)")
 
             for t in tables:
+                pages = f"{t.page}-{t.page_end}" if t.page_end and t.page_end != t.page else str(t.page)
                 logger.info(
                     "   '%s': %d rows × %d cols  (page %s)",
-                    t.title or "untitled",
-                    t.nrows,
-                    t.ncols,
-                    f"{t.page}-{t.page_end}" if t.page_end and t.page_end != t.page else str(t.page),
+                    t.title or "untitled", t.nrows, t.ncols, pages,
                 )
 
-            # Always emit the JSON contract, even when no tables were found —
-            # downstream consumers expect one file per input document.
+            # always write JSON (downstream tools expect one file per input doc)
             if "json" in formats:
                 write_json(tables, output_dir / f"{doc_id}_tables.json", doc_id)
             if "csv" in formats:
@@ -118,11 +114,7 @@ Examples:
 
     logger.info(
         "\n%s\nDone. %d/%d succeeded in %.1fs total. Output: %s",
-        "=" * 50,
-        ok,
-        len(pdfs),
-        time.time() - t0,
-        output_dir,
+        "=" * 50, ok, len(pdfs), time.time() - t0, output_dir,
     )
     return 1 if fail else 0
 
